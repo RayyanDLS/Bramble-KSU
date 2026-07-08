@@ -11,8 +11,28 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Display system info
+      - name: Install dependencies
         run: |
-          uname -a
-          lscpu
-          df -h
+          sudo apt-get update
+          sudo apt-get install -y \
+            git bc bison flex \
+            build-essential \
+            libssl-dev \
+            libelf-dev \
+            libncurses-dev \
+            python3
+
+      - name: Clone Android 14 kernel
+        run: |
+          git clone \
+            --depth=1 \
+            -b android-msm-redbull-4.19-android14-qpr3 \
+            https://android.googlesource.com/kernel/msm \
+            kernel
+
+      - name: Verify source
+        run: |
+          cd kernel
+          pwd
+          ls
+          ls arch/arm64/configs | grep bramble
