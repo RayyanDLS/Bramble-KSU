@@ -30,9 +30,9 @@ jobs:
             https://android.googlesource.com/kernel/msm \
             kernel
 
-      - name: Verify source
+      - name: Check build system
         run: |
           cd kernel
-          pwd
           ls
-          ls arch/arm64/configs | grep bramble
+          ls build || true
+          find . -maxdepth 2 -name build.sh
