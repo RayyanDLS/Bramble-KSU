@@ -1,0 +1,104 @@
+name: Build KernelSU for Bramble (UP1A.231105.001.B2)
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: false
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Preparing Build Environment
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y repo git curl python3
+          mkdir -p /home/runner/android-kernel
+          cd /home/runner/android-kernel
+          repo init -u https://android.googlesource.com/kernel/manifest -b android-msm-redbull-4.19-android14
+          repo sync -j$(nproc)
+
+      - name: Inject Official KernelSU
+        run: |
+          cd /home/runner/android-kernel/private/msm-google
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
+
+      - name: Apply Manual C Hooks (Bypass Kprobes)
+        run: |
+          cd /home/runner/android-kernel/private/msm-google
+          cat << 'EOF' > patch_ksu.py
+          import os
+
+          patches = {
+              'fs/exec.c': {
+                  'target': 'if (IS_ERR(filename))',
+                  'header': '#ifdef CONFIG_KSU\nextern bool ksu_execveat_hook __read_mostly;\nextern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\nextern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n#endif',
+                  'hook': '#ifdef CONFIG_KSU\n\tif (unlikely(ksu_execveat_hook))\n\t\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n\telse\n\t\tksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);\n#endif'
+              },
+              'fs/open.c': {
+                  'target': 'if (mode & ~S_IRWXO)',
+                  'header': '#ifdef CONFIG_KSU\nextern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n#endif',
+                  'hook': '#ifdef CONFIG_KSU\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif'
+              },
+              'fs/read_write.c': {
+                  'target': 'if (!(file->f_mode & FMODE_READ))',
+                  'header': '#ifdef CONFIG_KSU\nextern bool ksu_vfs_read_hook __read_mostly;\nextern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);\n#endif',
+                  'hook': '#ifdef CONFIG_KSU\n\tif (unlikely(ksu_vfs_read_hook))\n\t\tksu_handle_vfs_read(&file, &buf, &count, &pos);\n#endif'
+              },
+              'fs/stat.c': {
+                  'target': 'if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |',
+                  'header': '#ifdef CONFIG_KSU\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n#endif',
+                  'hook': '#ifdef CONFIG_KSU\n\tksu_handle_stat(&dfd, &filename, &flags);\n#endif'
+              },
+              'drivers/input/input.c': {
+                  'target': 'if (disposition != INPUT_IGNORE_EVENT && type != EV_SYN)',
+                  'header': '#ifdef CONFIG_KSU\nextern bool ksu_input_hook __read_mostly;\nextern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);\n#endif',
+                  'hook': '#ifdef CONFIG_KSU\n\tif (unlikely(ksu_input_hook))\n\t\tksu_handle_input_handle_event(&type, &code, &value);\n#endif'
+              }
+          }
+
+          for path, data in patches.items():
+              with open(path, 'r') as f:
+                  c = f.read()
+              idx = c.find('\n\n', c.find('#include'))
+              if idx != -1:
+                  c = c[:idx] + '\n\n' + data['header'] + c[idx:]
+              c = c.replace(data['target'], data['hook'] + '\n\t' + data['target'])
+              with open(path, 'w') as f:
+                  f.write(c)
+
+          with open('arch/arm64/configs/redbull_defconfig', 'a') as f:
+              f.write('\nCONFIG_KPROBES=n\n')
+          EOF
+          python3 patch_ksu.py
+
+      - name: Compile Kernel
+        run: |
+          cd /home/runner/android-kernel
+          BUILD_CONFIG=private/msm-google/build.config.redbull build/build.sh
+
+      - name: Package with AnyKernel3
+        run: |
+          cd /home/runner/android-kernel
+          git clone https://github.com/osm0sis/AnyKernel3.git
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
+          sed -i 's!block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!block=auto;!g' AnyKernel3/anykernel.sh
+          sed -i 's/is_slot_device=0;/is_slot_device=auto;/g' AnyKernel3/anykernel.sh
+          cp out/android-msm-pixel-4.19/dist/Image.lz4-dtb AnyKernel3/
+          cd AnyKernel3
+          zip -r AnyKernel3-Bramble-KSU.zip . -x ".git*" -x "README.md" -x "*.zip"
+
+      - name: Upload Flashable Zip
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnyKernel3-Bramble-KSU
+          path: "/home/runner/android-kernel/AnyKernel3/AnyKernel3-Bramble-KSU.zip"
