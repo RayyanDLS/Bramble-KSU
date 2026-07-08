@@ -29,7 +29,7 @@ jobs:
       - name: Inject Official KernelSU
         run: |
           cd /home/runner/android-kernel/private/msm-google
-          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
 
       - name: Apply Manual C Hooks (Bypass Kprobes)
         run: |
